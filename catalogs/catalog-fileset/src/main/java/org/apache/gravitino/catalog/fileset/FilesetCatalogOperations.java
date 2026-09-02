@@ -41,7 +41,6 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -140,6 +139,7 @@ public class FilesetCatalogOperations extends ManagedSchemaOperations
   private static final String CATALOG_PLACEHOLDER = "{{catalog}}";
   private static final String PROBE_UNSUPPORTED = "probe unsupported";
   private static final String PROBE_UNSUPPORTED_DETAIL_PREFIX = PROBE_UNSUPPORTED + ":";
+  private static final int MAX_FILES_PER_LIST = 1000;
 
   // location placeholder pattern format: {{placeholder}}
   private static final Pattern LOCATION_PLACEHOLDER_PATTERN = Pattern.compile("\\{\\{(.*?)\\}\\}");
@@ -424,17 +424,20 @@ public class FilesetCatalogOperations extends ManagedSchemaOperations
     String filesetName = filesetIdent.name();
 
     try {
-      return Arrays.stream(fs.listStatus(formalizedPath))
-          .map(
-              status ->
-                  FileInfoDTO.builder()
-                      .name(status.getPath().getName())
-                      .isDir(status.isDirectory())
-                      .size(status.isDirectory() ? 0L : status.getLen())
-                      .lastModified(status.getModificationTime())
-                      .path(buildGVFSFilePath(catalogName, schemaName, filesetName, subPath))
-                      .build())
-          .toArray(FileInfo[]::new);
+      List<FileInfo> files = new ArrayList<>();
+      RemoteIterator<FileStatus> iterator = fs.listStatusIterator(formalizedPath);
+      while (iterator.hasNext() && files.size() < MAX_FILES_PER_LIST) {
+        FileStatus status = iterator.next();
+        files.add(
+            FileInfoDTO.builder()
+                .name(status.getPath().getName())
+                .isDir(status.isDirectory())
+                .size(status.isDirectory() ? 0L : status.getLen())
+                .lastModified(status.getModificationTime())
+                .path(buildGVFSFilePath(catalogName, schemaName, filesetName, subPath))
+                .build());
+      }
+      return files.toArray(new FileInfo[0]);
 
     } catch (IOException e) {
       throw new RuntimeException("Failed to list files in fileset" + filesetIdent, e);

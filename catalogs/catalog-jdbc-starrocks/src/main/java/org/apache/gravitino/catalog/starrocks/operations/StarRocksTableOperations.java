@@ -43,6 +43,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.gravitino.StringIdentifier;
 import org.apache.gravitino.catalog.jdbc.JdbcColumn;
 import org.apache.gravitino.catalog.jdbc.JdbcTable;
+import org.apache.gravitino.catalog.jdbc.converter.JdbcTypeConverter;
 import org.apache.gravitino.catalog.jdbc.operation.JdbcTableOperations;
 import org.apache.gravitino.catalog.jdbc.operation.JdbcTablePartitionOperations;
 import org.apache.gravitino.catalog.starrocks.utils.StarRocksUtils;
@@ -50,6 +51,7 @@ import org.apache.gravitino.exceptions.NoSuchColumnException;
 import org.apache.gravitino.exceptions.NoSuchTableException;
 import org.apache.gravitino.rel.Column;
 import org.apache.gravitino.rel.TableChange;
+import org.apache.gravitino.rel.expressions.Expression;
 import org.apache.gravitino.rel.expressions.distributions.Distribution;
 import org.apache.gravitino.rel.expressions.distributions.Distributions;
 import org.apache.gravitino.rel.expressions.distributions.Strategy;
@@ -212,13 +214,15 @@ public class StarRocksTableOperations extends JdbcTableOperations {
 
   @Override
   protected boolean getAutoIncrementInfo(ResultSet resultSet) throws SQLException {
-    return "YES".equalsIgnoreCase(resultSet.getString("IS_AUTOINCREMENT"));
+    // SHOW FULL COLUMNS has an "Extra" column; auto-increment columns contain
+    // "auto_increment" in the Extra field.
+    String extra = resultSet.getString("Extra");
+    return extra != null && extra.toLowerCase().contains("auto_increment");
   }
 
   @Override
   protected Map<String, String> getTableProperties(Connection connection, String tableName)
       throws SQLException {
-
     String showCreateTableSQL = String.format("SHOW CREATE TABLE `%s`", tableName);
 
     StringBuilder createTableSqlSb = new StringBuilder();
@@ -275,6 +279,135 @@ public class StarRocksTableOperations extends JdbcTableOperations {
           StarRocksUtils.extractPartitionInfoFromSql(createTableSql.toString());
       return transform.map(t -> new Transform[] {t}).orElse(Transforms.EMPTY_TRANSFORM);
     }
+  }
+
+  @Override
+  protected ResultSet getColumns(Connection connection, String databaseName, String tableName)
+      throws SQLException {
+    // Override the parent's DatabaseMetaData.getColumns() to bypass MySQL Connector/J's
+    // TypeDescriptor parsing, which throws StringIndexOutOfBoundsException on certain
+    // StarRocks column type strings (e.g. array<struct<...>> with commas inside angle
+    // brackets). Use SHOW FULL COLUMNS which returns the raw type string without
+    // driver-side parsing, and does not require SELECT privilege on
+    // information_schema.columns (StarRocks restricts that table).
+    //
+    // For external tables (Iceberg/Hudi/Delta) whose underlying S3 data is missing,
+    // SHOW FULL COLUMNS will throw an SQLException wrapping an S3 404 error.
+    // In that case, fall back to the parent's DatabaseMetaData.getColumns() which
+    // may also fail, but the error will surface as a more recognizable
+    // NoSuchTableException rather than a raw S3 404.
+    String sql = String.format("SHOW FULL COLUMNS FROM `%s` FROM `%s`", tableName, databaseName);
+    try {
+      return connection.createStatement().executeQuery(sql);
+    } catch (SQLException e) {
+      // If SHOW FULL COLUMNS fails (e.g. external table with missing S3 data),
+      // fall back to the parent implementation. This may also fail, but it
+      // avoids a hard crash on tables that can be listed but not introspected.
+      LOG.warn(
+          "SHOW FULL COLUMNS failed for table {}.{}, falling back to DatabaseMetaData.getColumns()."
+              + " Error: {}",
+          databaseName,
+          tableName,
+          e.getMessage());
+      return super.getColumns(connection, databaseName, tableName);
+    }
+  }
+
+  @Override
+  protected JdbcColumn.Builder getColumnBuilder(
+      ResultSet columnsResult, String databaseName, String tableName) throws SQLException {
+    // SHOW FULL COLUMNS returns: Field, Type, Collation, Null, Key, Default, Extra, Comment
+    // Map to JdbcColumn.Builder using the same logic as getBasicJdbcColumnInfo but reading
+    // from the SHOW FULL COLUMNS column layout.
+    String fieldName = columnsResult.getString("Field");
+    if (fieldName == null) {
+      return null;
+    }
+    return getBasicJdbcColumnInfoFromShowColumns(columnsResult);
+  }
+
+  /**
+   * Build a JdbcColumn.Builder from a SHOW FULL COLUMNS ResultSet row.
+   *
+   * <p>SHOW FULL COLUMNS returns: Field, Type, Collation, Null, Key, Default, Extra, Comment
+   *
+   * <p>We parse the Type field (e.g. "varchar(1073741824)", "decimal(10,2)", "array<...>",
+   * "struct<...>") to extract the type name, column size, and scale, avoiding the MySQL driver's
+   * buggy TypeDescriptor that crashes on complex StarRocks types.
+   */
+  protected JdbcColumn.Builder getBasicJdbcColumnInfoFromShowColumns(ResultSet column)
+      throws SQLException {
+    String fieldName = column.getString("Field");
+    String fullType = column.getString("Type");
+    String comment = column.getString("Comment");
+    String nullStr = column.getString("Null");
+    String columnDef = column.getString("Default");
+    String extra = column.getString("Extra");
+
+    // Parse the full type string to extract type name, column size, and scale.
+    // Examples: "varchar(1073741824)" -> varchar, 1073741824, 0
+    //           "decimal(10,2)" -> decimal, 10, 2
+    //           "int" -> int, 0, 0
+    //           "array<varchar(1073741824)>" -> array, 0, 0 (complex type, no paren parsing)
+    //           "struct<...>" -> struct, 0, 0
+    String typeName = fullType;
+    int columnSize = 0;
+    int scale = 0;
+
+    int parenIdx = fullType.indexOf('(');
+    if (parenIdx > 0) {
+      // Check if the parenthesis belongs to a simple type (not array/struct/map)
+      String baseName = fullType.substring(0, parenIdx).toLowerCase();
+      if (!baseName.startsWith("array")
+          && !baseName.startsWith("struct")
+          && !baseName.startsWith("map")) {
+        typeName = baseName;
+        int closeParenIdx = fullType.lastIndexOf(')');
+        if (closeParenIdx > parenIdx) {
+          String inside = fullType.substring(parenIdx + 1, closeParenIdx).trim();
+          int commaIdx = inside.indexOf(',');
+          if (commaIdx > 0) {
+            // e.g. decimal(10,2) -> size=10, scale=2
+            try {
+              columnSize = Integer.parseInt(inside.substring(0, commaIdx).trim());
+              scale = Integer.parseInt(inside.substring(commaIdx + 1).trim());
+            } catch (NumberFormatException e) {
+              columnSize = 0;
+              scale = 0;
+            }
+          } else {
+            // e.g. varchar(1073741824) -> size=1073741824
+            try {
+              columnSize = Integer.parseInt(inside);
+            } catch (NumberFormatException e) {
+              columnSize = 0;
+            }
+          }
+        }
+      } else {
+        // Complex type (array/struct/map): use full type string as typeName
+        // The StarRocksTypeConverter handles these types.
+        typeName = baseName;
+      }
+    }
+
+    JdbcTypeConverter.JdbcTypeBean typeBean = new JdbcTypeConverter.JdbcTypeBean(typeName);
+    typeBean.setColumnSize(columnSize);
+    typeBean.setScale(scale);
+    Integer datetimePrecision = calculateDatetimePrecision(typeName, columnSize, scale);
+    typeBean.setDatetimePrecision(datetimePrecision);
+
+    boolean nullable = "YES".equalsIgnoreCase(nullStr);
+    boolean isExpression = extra != null && extra.toLowerCase().contains("auto_increment");
+    Expression defaultValue =
+        columnDefaultValueConverter.toGravitino(typeBean, columnDef, isExpression, nullable);
+
+    return JdbcColumn.builder()
+        .withName(fieldName)
+        .withType(typeConverter.toGravitino(typeBean))
+        .withComment(StringUtils.isEmpty(comment) ? null : comment)
+        .withNullable(nullable)
+        .withDefaultValue(defaultValue);
   }
 
   @Override

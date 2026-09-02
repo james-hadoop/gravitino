@@ -71,3 +71,6 @@ web/.next
 *.swp
 *.swo
 .*.sw?
+.gstack/
+
+_james_work

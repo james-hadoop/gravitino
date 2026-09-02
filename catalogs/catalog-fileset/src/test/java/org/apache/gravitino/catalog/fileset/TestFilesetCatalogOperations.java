@@ -1082,7 +1082,9 @@ public class TestFilesetCatalogOperations {
       fs.mkdirs(testDir);
       fs.create(new Path(testDir, "test_file1.txt")).close();
       fs.create(new Path(testDir, "test_file2.txt")).close();
-      fs.mkdirs(new Path(testDir, "test_subdir"));
+      Path testSubdir = new Path(testDir, "test_subdir");
+      fs.mkdirs(testSubdir);
+      fs.create(new Path(testSubdir, "nested_file.txt")).close();
 
       FileInfo[] files = ops.listFiles(filesetIdent, null, "/");
 
@@ -1109,6 +1111,12 @@ public class TestFilesetCatalogOperations {
         Assertions.assertNotNull(file.path(), "File path should not be null");
         Assertions.assertTrue(file.lastModified() > 0, "Last modified time should be positive");
       }
+
+      FileInfo[] nestedFiles = ops.listFiles(filesetIdent, null, "/test_subdir");
+      Assertions.assertEquals(1, nestedFiles.length);
+      Assertions.assertEquals("nested_file.txt", nestedFiles[0].name());
+      Assertions.assertFalse(nestedFiles[0].isDir());
+      Assertions.assertTrue(nestedFiles[0].path().endsWith("/test_subdir"));
     }
   }
 

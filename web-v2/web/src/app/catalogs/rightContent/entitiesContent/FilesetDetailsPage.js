@@ -36,6 +36,7 @@ import { getCatalogDetails } from '@/lib/store/metalakes'
 import Loading from '@/components/Loading'
 import CreateFilesetDialog from '../CreateFilesetDialog'
 import { getCurrentEntityOwner } from '@/lib/store/metalakes'
+import { isFilesystemBrowsingDisabled, resolveFilesetActiveTab } from '@/lib/fileset-tabs'
 
 const SetOwnerDialog = dynamic(() => import('@/components/SetOwnerDialog'), {
   loading: () => <Loading />,
@@ -143,8 +144,12 @@ export default function FilesetDetailsPage({ ...props }) {
     )
   }
 
-  const disableFilesystemOps = catalogData?.properties?.['disable-filesystem-ops'] === 'true'
-  const [activeTab, setActiveTab] = useState(disableFilesystemOps ? '' : 'files')
+  const disableFilesystemOps = isFilesystemBrowsingDisabled(catalogData)
+  const [activeTab, setActiveTab] = useState('')
+
+  useEffect(() => {
+    setActiveTab(current => resolveFilesetActiveTab({ catalog: catalogData, activeTab: current }))
+  }, [catalogData])
 
   const tabOptions = [
     {

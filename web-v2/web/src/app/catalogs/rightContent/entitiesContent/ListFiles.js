@@ -37,6 +37,7 @@ const ListFiles = ({ metalake, catalog, schema, fileset, storageLocations, defau
   const [currentLocation, setCurrentLocation] = useState(undefined)
   const [sub_path, setSubPath] = useState('')
   const [pathSegments, setPathSegments] = useState([])
+  const [files, setFiles] = useState([])
   const { message } = App.useApp()
   const store = useAppSelector(state => state.metalakes)
   const dispatch = useAppDispatch()
@@ -74,6 +75,9 @@ const ListFiles = ({ metalake, catalog, schema, fileset, storageLocations, defau
 
   useEffect(() => {
     if (metalake && catalog && schema && fileset && currentLocation && storageLocations?.[currentLocation]) {
+      let active = true
+      setFiles([])
+
       dispatch(
         getFilesetFiles({
           metalake,
@@ -83,7 +87,15 @@ const ListFiles = ({ metalake, catalog, schema, fileset, storageLocations, defau
           subPath: sub_path,
           locationName: currentLocation
         })
-      )
+      ).then(action => {
+        if (active && getFilesetFiles.fulfilled.match(action)) {
+          setFiles(action.payload.files || [])
+        }
+      })
+
+      return () => {
+        active = false
+      }
     }
   }, [dispatch, metalake, catalog, schema, fileset, sub_path, currentLocation])
 
@@ -178,8 +190,6 @@ const ListFiles = ({ metalake, catalog, schema, fileset, storageLocations, defau
     return <Spin />
   }
 
-  const displayedFiles = [...store.tableData] || []
-
   const currentFullPath =
     currentLocation && storageLocations && storageLocations[currentLocation]
       ? `${storageLocations[currentLocation].replace(/\/$/, '')}${sub_path ? `/${sub_path}` : ''}`
@@ -227,7 +237,7 @@ const ListFiles = ({ metalake, catalog, schema, fileset, storageLocations, defau
         <Table
           style={{ maxHeight: 'calc(100vh - 30rem)' }}
           scroll={{ y: 'calc(100vh - 37rem)' }}
-          dataSource={displayedFiles}
+          dataSource={files}
           columns={resizableColumns}
           components={components}
           rowKey='name'
