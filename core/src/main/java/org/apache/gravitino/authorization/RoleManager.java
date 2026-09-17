@@ -159,9 +159,42 @@ class RoleManager {
           .toArray(String[]::new);
 
     } catch (NoSuchEntityException nse) {
-      LOG.error("Metadata object {} (type {}) doesn't exist", object.fullName(), object.type());
-      throw new NoSuchMetadataObjectException(
-          "Metadata object %s (type %s) doesn't exist", object.fullName(), object.type());
+      // The entity may simply not have been imported from the underlying catalog yet (for
+      // example a table that the UI visits for the first time). checkMetadataObject loads
+      // and imports the entity from the underlying source; only if that also fails is the
+      // metadata object genuinely missing.
+      try {
+        MetadataObjectUtil.checkMetadataObject(metalake, object);
+      } catch (NoSuchMetadataObjectException checkFailed) {
+        LOG.error("Metadata object {} (type {}) doesn't exist", object.fullName(), object.type());
+        throw new NoSuchMetadataObjectException(
+            "Metadata object %s (type %s) doesn't exist", object.fullName(), object.type());
+      }
+
+      try {
+        return store
+            .relationOperations()
+            .listEntitiesByRelation(
+                SupportsRelationOperations.Type.METADATA_OBJECT_ROLE_REL,
+                MetadataObjectUtil.toEntityIdent(metalake, object),
+                MetadataObjectUtil.toEntityType(object),
+                false /* allFields */)
+            .stream()
+            .map(entity -> ((RoleEntity) entity).name())
+            .toArray(String[]::new);
+      } catch (NoSuchEntityException stillMissing) {
+        // The metadata object exists in the underlying source but has no role relation rows
+        // in the store yet; that means no roles are associated with it.
+        return new String[0];
+      } catch (IOException retry) {
+        LOG.error(
+            "Listing roles under metalake {} by object full name {} and type {} failed",
+            metalake,
+            object.fullName(),
+            object.type(),
+            retry);
+        throw new RuntimeException(retry);
+      }
     } catch (IOException ioe) {
       LOG.error(
           "Listing roles under metalake {} by object full name {} and type {} failed due to storage issues",

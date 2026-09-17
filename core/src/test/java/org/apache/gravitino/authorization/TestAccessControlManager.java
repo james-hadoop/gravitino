@@ -67,11 +67,13 @@ import org.apache.gravitino.StringIdentifier;
 import org.apache.gravitino.bulk.BulkItemResult;
 import org.apache.gravitino.bulk.UserAdd;
 import org.apache.gravitino.catalog.CatalogManager;
+import org.apache.gravitino.catalog.TableDispatcher;
 import org.apache.gravitino.connector.BaseCatalog;
 import org.apache.gravitino.connector.HiddenPropertyMaskUtils;
 import org.apache.gravitino.connector.authorization.AuthorizationPlugin;
 import org.apache.gravitino.exceptions.GroupAlreadyExistsException;
 import org.apache.gravitino.exceptions.NoSuchGroupException;
+import org.apache.gravitino.exceptions.NoSuchMetadataObjectException;
 import org.apache.gravitino.exceptions.NoSuchMetalakeException;
 import org.apache.gravitino.exceptions.NoSuchRoleException;
 import org.apache.gravitino.exceptions.NoSuchUserException;
@@ -96,6 +98,7 @@ public class TestAccessControlManager {
 
   private static EntityStore entityStore;
   private static CatalogManager catalogManager = mock(CatalogManager.class);
+  private static TableDispatcher tableDispatcher = mock(TableDispatcher.class);
 
   private static final Config config = Mockito.mock(Config.class);
 
@@ -193,6 +196,7 @@ public class TestAccessControlManager {
     FieldUtils.writeField(
         GravitinoEnv.getInstance(), "accessControlDispatcher", accessControlManager, true);
     FieldUtils.writeField(GravitinoEnv.getInstance(), "catalogManager", catalogManager, true);
+    FieldUtils.writeField(GravitinoEnv.getInstance(), "tableDispatcher", tableDispatcher, true);
     BaseCatalog catalog = mock(BaseCatalog.class);
     when(catalogManager.loadCatalog(any())).thenReturn(catalog);
     authorizationPlugin = mock(AuthorizationPlugin.class);
@@ -510,6 +514,39 @@ public class TestAccessControlManager {
 
     accessControlManager.deleteRole("metalake_list", "testList1");
     accessControlManager.deleteRole("metalake_list", "testList2");
+  }
+
+  @Test
+  public void testListRolesByNonImportedObject() {
+    Map<String, String> props = ImmutableMap.of("k1", "v1");
+    SecurableObject catalogObject =
+        SecurableObjects.ofCatalog("catalog", Lists.newArrayList(Privileges.UseCatalog.allow()));
+    accessControlManager.createRole(
+        "metalake_list", "testNonImported", props, Lists.newArrayList(catalogObject));
+
+    // The table exists in the underlying catalog (tableExists -> true) but has never been
+    // imported into the entity store. Listing its roles must not report the metadata object
+    // as missing; it should trigger the import check and return the (empty) role list.
+    when(tableDispatcher.tableExists(any())).thenReturn(true);
+    SecurableObject schemaObject =
+        SecurableObjects.ofSchema(catalogObject, "schema_not_imported", Lists.newArrayList());
+    SecurableObject nonImportedTableObject =
+        SecurableObjects.ofTable(
+            schemaObject, "table_not_imported", Lists.newArrayList(Privileges.SelectTable.allow()));
+
+    String[] roles =
+        accessControlManager.listRoleNamesByObject("metalake_list", nonImportedTableObject);
+    Assertions.assertNotNull(roles);
+    Assertions.assertEquals(0, roles.length);
+
+    // A table that does not exist in the underlying source either must still be reported
+    // as a missing metadata object.
+    when(tableDispatcher.tableExists(any())).thenReturn(false);
+    Assertions.assertThrows(
+        NoSuchMetadataObjectException.class,
+        () -> accessControlManager.listRoleNamesByObject("metalake_list", nonImportedTableObject));
+
+    accessControlManager.deleteRole("metalake_list", "testNonImported");
   }
 
   @Test
