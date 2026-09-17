@@ -19,7 +19,9 @@
 
 package org.apache.gravitino.catalog;
 
+import org.apache.gravitino.NameIdentifier;
 import org.apache.gravitino.rel.TableCatalog;
+import org.apache.gravitino.rel.TableDataPreview;
 
 /**
  * {@code TableDispatcher} interface acts as a specialization of the {@link TableCatalog} interface.
@@ -27,4 +29,14 @@ import org.apache.gravitino.rel.TableCatalog;
  * dispatching or handling table-related events or actions that are not covered by the standard
  * {@code TableCatalog} operations.
  */
-public interface TableDispatcher extends TableCatalog {}
+public interface TableDispatcher extends TableCatalog {
+
+  /**
+   * Reads a bounded sample of table data.
+   *
+   * @param tableIdent identifier of the table
+   * @param limit maximum number of rows to return
+   * @return sampled columns and rows
+   */
+  TableDataPreview previewTable(NameIdentifier tableIdent, int limit);
+}

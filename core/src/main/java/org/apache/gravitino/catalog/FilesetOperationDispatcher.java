@@ -130,6 +130,39 @@ public class FilesetOperationDispatcher extends OperationDispatcher implements F
                 NoSuchFilesetException.class));
   }
 
+  @Override
+  public String readFile(NameIdentifier ident, String locationName, String subPath, int maxLength)
+      throws NoSuchFilesetException {
+    NameIdentifier catalogIdent = getCatalogIdentifier(ident);
+    return TreeLockUtils.doWithTreeLock(
+        ident,
+        LockType.READ,
+        () ->
+            doWithCatalog(
+                catalogIdent,
+                c ->
+                    c.doWithFilesetFileOps(
+                        f -> f.readFile(ident, locationName, subPath, maxLength)),
+                NoSuchFilesetException.class));
+  }
+
+  @Override
+  public byte[] readFileBytes(
+      NameIdentifier ident, String locationName, String subPath, int maxLength)
+      throws NoSuchFilesetException {
+    NameIdentifier catalogIdent = getCatalogIdentifier(ident);
+    return TreeLockUtils.doWithTreeLock(
+        ident,
+        LockType.READ,
+        () ->
+            doWithCatalog(
+                catalogIdent,
+                c ->
+                    c.doWithFilesetFileOps(
+                        f -> f.readFileBytes(ident, locationName, subPath, maxLength)),
+                NoSuchFilesetException.class));
+  }
+
   /**
    * Create a fileset metadata in the catalog.
    *

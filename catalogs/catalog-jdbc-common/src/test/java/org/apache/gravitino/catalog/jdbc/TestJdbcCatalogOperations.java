@@ -19,11 +19,16 @@
 package org.apache.gravitino.catalog.jdbc;
 
 import com.google.common.collect.Maps;
+import java.nio.file.Path;
+import java.sql.Connection;
 import java.sql.SQLException;
+import java.sql.Statement;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import javax.sql.DataSource;
 import org.apache.commons.dbcp2.BasicDataSource;
+import org.apache.commons.lang3.reflect.FieldUtils;
 import org.apache.gravitino.NameIdentifier;
 import org.apache.gravitino.catalog.jdbc.config.JdbcConfig;
 import org.apache.gravitino.catalog.jdbc.converter.SqliteColumnDefaultValueConverter;
@@ -34,8 +39,10 @@ import org.apache.gravitino.catalog.jdbc.operation.SqliteTableOperations;
 import org.apache.gravitino.catalog.jdbc.utils.DataSourceUtils;
 import org.apache.gravitino.exceptions.ConnectionFailedException;
 import org.apache.gravitino.exceptions.GravitinoRuntimeException;
+import org.apache.gravitino.rel.TableDataPreview;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 public class TestJdbcCatalogOperations {
 
@@ -79,6 +86,45 @@ public class TestJdbcCatalogOperations {
     Assertions.assertInstanceOf(BasicDataSource.class, dataSource);
     Assertions.assertFalse(((BasicDataSource) dataSource).getTestOnBorrow());
     ((BasicDataSource) dataSource).close();
+  }
+
+  @Test
+  public void testPreviewTableReturnsAtMostOneHundredRows(@TempDir Path tempDir) throws Exception {
+    HashMap<String, String> properties = Maps.newHashMap();
+    properties.put(JdbcConfig.JDBC_DRIVER.getKey(), "org.sqlite.JDBC");
+    properties.put(JdbcConfig.JDBC_URL.getKey(), "jdbc:sqlite:" + tempDir.resolve("preview.db"));
+    properties.put(JdbcConfig.USERNAME.getKey(), "test");
+    properties.put(JdbcConfig.PASSWORD.getKey(), "test");
+
+    BasicDataSource dataSource = (BasicDataSource) DataSourceUtils.createDataSource(properties);
+    JdbcCatalogOperations catalogOperations =
+        new JdbcCatalogOperations(
+            new SqliteExceptionConverter(),
+            new SqliteTypeConverter(),
+            new SqliteDatabaseOperations(":memory:"),
+            new SqliteTableOperations(),
+            new SqliteColumnDefaultValueConverter());
+    FieldUtils.writeField(catalogOperations, "dataSource", dataSource, true);
+
+    try (Connection connection = dataSource.getConnection();
+        Statement statement = connection.createStatement()) {
+      statement.execute("CREATE TABLE sample (id INTEGER, note TEXT)");
+      for (int i = 0; i < 105; i++) {
+        statement.execute(
+            String.format("INSERT INTO sample VALUES (%d, %s)", i, i == 0 ? "NULL" : "'row'"));
+      }
+
+      TableDataPreview preview =
+          catalogOperations.previewTable(
+              NameIdentifier.of("metalake", "catalog", "main", "sample"), 100);
+
+      Assertions.assertEquals(List.of("id", "note"), preview.columns());
+      Assertions.assertEquals(100, preview.rows().size());
+      Assertions.assertEquals(Arrays.asList("0", null), preview.rows().get(0));
+      Assertions.assertEquals(List.of("99", "row"), preview.rows().get(99));
+    } finally {
+      catalogOperations.close();
+    }
   }
 
   @Test

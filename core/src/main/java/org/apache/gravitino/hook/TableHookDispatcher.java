@@ -37,6 +37,7 @@ import org.apache.gravitino.exceptions.TableAlreadyExistsException;
 import org.apache.gravitino.rel.Column;
 import org.apache.gravitino.rel.Table;
 import org.apache.gravitino.rel.TableChange;
+import org.apache.gravitino.rel.TableDataPreview;
 import org.apache.gravitino.rel.expressions.distributions.Distribution;
 import org.apache.gravitino.rel.expressions.sorts.SortOrder;
 import org.apache.gravitino.rel.expressions.transforms.Transform;
@@ -79,6 +80,11 @@ public class TableHookDispatcher implements TableDispatcher {
   @Override
   public Table loadTable(NameIdentifier ident) throws NoSuchTableException {
     return dispatcher.loadTable(ident);
+  }
+
+  @Override
+  public TableDataPreview previewTable(NameIdentifier tableIdent, int limit) {
+    return dispatcher.previewTable(tableIdent, limit);
   }
 
   @Override

@@ -44,4 +44,38 @@ public interface FilesetFileOps {
     throw new UnsupportedOperationException(
         "listFiles not supported by " + getClass().getSimpleName());
   }
+
+  /**
+   * Read the raw bytes of a file in a fileset with a specific location name and sub path. Reads at
+   * most {@code maxLength} bytes from the head of the file.
+   *
+   * @param ident A fileset identifier.
+   * @param locationName The location name. If null, the default location will be used.
+   * @param subPath The sub path pointing to a regular file under the fileset.
+   * @param maxLength The maximum number of bytes to read.
+   * @return The file content bytes.
+   */
+  default byte[] readFileBytes(
+      NameIdentifier ident, String locationName, String subPath, int maxLength)
+      throws NoSuchFilesetException, IOException {
+    throw new UnsupportedOperationException(
+        "readFileBytes not supported by " + getClass().getSimpleName());
+  }
+
+  /**
+   * Read the text content of a file in a fileset with a specific location name and sub path. Reads
+   * at most {@code maxLength} bytes from the head of the file.
+   *
+   * @param ident A fileset identifier.
+   * @param locationName The location name. If null, the default location will be used.
+   * @param subPath The sub path pointing to a regular file under the fileset.
+   * @param maxLength The maximum number of bytes to read.
+   * @return The file content as UTF-8 text.
+   */
+  default String readFile(NameIdentifier ident, String locationName, String subPath, int maxLength)
+      throws NoSuchFilesetException, IOException {
+    return new String(
+        readFileBytes(ident, locationName, subPath, maxLength),
+        java.nio.charset.StandardCharsets.UTF_8);
+  }
 }

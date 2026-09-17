@@ -18,7 +18,14 @@
  */
 package org.apache.gravitino.catalog.starrocks.operation;
 
+import java.lang.reflect.InvocationHandler;
+import java.sql.Connection;
+import java.sql.DatabaseMetaData;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.util.Collections;
+import java.util.Iterator;
+import java.util.List;
 import org.apache.gravitino.StringIdentifier;
 import org.apache.gravitino.catalog.jdbc.JdbcColumn;
 import org.apache.gravitino.catalog.jdbc.JdbcTable;
@@ -68,6 +75,15 @@ public class TestStarRocksTableOperationsSqlGeneration {
       return generateAlterTableSql("database", tableName, changes);
     }
 
+    public List<String> tableNames(ResultSet resultSet) throws SQLException {
+      return readTableNames(resultSet);
+    }
+
+    public ResultSet table(Connection connection, String databaseName, String tableName)
+        throws SQLException {
+      return getTable(connection, databaseName, tableName);
+    }
+
     @Override
     protected JdbcTable getOrCreateTable(
         String databaseName, String tableName, JdbcTable lazyLoadCreateTable) {
@@ -77,6 +93,76 @@ public class TestStarRocksTableOperationsSqlGeneration {
               StringIdentifier.addToComment(StringIdentifier.fromId(42), "existing comment"))
           .build();
     }
+  }
+
+  private static <T> T proxy(Class<T> interfaceClass, InvocationHandler handler) {
+    return interfaceClass.cast(
+        java.lang.reflect.Proxy.newProxyInstance(
+            interfaceClass.getClassLoader(), new Class<?>[] {interfaceClass}, handler));
+  }
+
+  private static ResultSet resultSet(Iterator<String> names, String[] current) {
+    return proxy(
+        ResultSet.class,
+        (proxy, method, arguments) -> {
+          if (method.getName().equals("next")) {
+            if (!names.hasNext()) {
+              return false;
+            }
+            current[0] = names.next();
+            return true;
+          }
+          if (method.getName().equals("getString")) {
+            return current[0];
+          }
+          if (method.getName().equals("close")) {
+            return null;
+          }
+          throw new UnsupportedOperationException(method.getName());
+        });
+  }
+
+  @Test
+  public void testReadTableNamesFromShowTablesResult() throws SQLException {
+    Iterator<String> names = List.of("table_a", "table_b").iterator();
+    String[] current = new String[1];
+    ResultSet resultSet = resultSet(names, current);
+
+    TestableStarRocksTableOperations operations = new TestableStarRocksTableOperations();
+
+    Assertions.assertEquals(List.of("table_a", "table_b"), operations.tableNames(resultSet));
+  }
+
+  @Test
+  public void testGetTableUsesDatabaseNameAsMetadataCatalog() throws SQLException {
+    String[][] getTablesArguments = new String[1][];
+    ResultSet resultSet = resultSet(List.<String>of().iterator(), new String[1]);
+    DatabaseMetaData metadata =
+        proxy(
+            DatabaseMetaData.class,
+            (proxy, method, arguments) -> {
+              if (method.getName().equals("getTables")) {
+                getTablesArguments[0] =
+                    new String[] {
+                      (String) arguments[0], (String) arguments[1], (String) arguments[2]
+                    };
+                return resultSet;
+              }
+              throw new UnsupportedOperationException(method.getName());
+            });
+    Connection connection =
+        proxy(
+            Connection.class,
+            (proxy, method, arguments) -> {
+              if (method.getName().equals("getMetaData")) {
+                return metadata;
+              }
+              throw new UnsupportedOperationException(method.getName());
+            });
+
+    TestableStarRocksTableOperations operations = new TestableStarRocksTableOperations();
+    Assertions.assertSame(resultSet, operations.table(connection, "dwd", "target_table"));
+    Assertions.assertArrayEquals(new String[] {"dwd", null, "target_table"}, getTablesArguments[0]);
   }
 
   @Test

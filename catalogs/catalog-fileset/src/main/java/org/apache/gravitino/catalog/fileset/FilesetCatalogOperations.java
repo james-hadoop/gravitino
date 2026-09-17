@@ -124,6 +124,7 @@ import org.apache.gravitino.utils.NameIdentifierUtil;
 import org.apache.gravitino.utils.NamespaceUtil;
 import org.apache.gravitino.utils.PrincipalUtils;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -441,6 +442,49 @@ public class FilesetCatalogOperations extends ManagedSchemaOperations
 
     } catch (IOException e) {
       throw new RuntimeException("Failed to list files in fileset" + filesetIdent, e);
+    }
+  }
+
+  @Override
+  public byte[] readFileBytes(
+      NameIdentifier filesetIdent, String locationName, String subPath, int maxLength)
+      throws NoSuchFilesetException, IOException {
+    if (disableFSOps) {
+      LOG.warn("Filesystem operations disabled, rejecting readFileBytes for {}", filesetIdent);
+      throw new UnsupportedOperationException("Filesystem operations are disabled on this server");
+    }
+    Preconditions.checkArgument(maxLength > 0, "maxLength must be positive");
+
+    Fileset fileset = loadFileset(filesetIdent);
+    String actualPath = getFileLocation(fileset, subPath, locationName);
+
+    Path actualPathObj = new Path(actualPath);
+    Map<String, String> fsConf =
+        mergeUpLevelConfigurations(filesetIdent, fileset.properties(), actualPathObj);
+    FileSystem fs = getFileSystemWithCache(actualPathObj, fsConf);
+    if (!fs.exists(actualPathObj) || !fs.getFileStatus(actualPathObj).isFile()) {
+      throw new IllegalArgumentException(
+          String.format(
+              "File %s does not exist or is not a regular file in fileset %s",
+              actualPathObj.toString(), filesetIdent));
+    }
+
+    long fileLen = fs.getFileStatus(actualPathObj).getLen();
+    int readLen = (int) Math.min(maxLength, fileLen);
+    byte[] buffer = new byte[readLen];
+    try (FSDataInputStream in = fs.open(actualPathObj)) {
+      int read = 0;
+      while (read < readLen) {
+        int n = in.read(buffer, read, readLen - read);
+        if (n < 0) {
+          break;
+        }
+        read += n;
+      }
+      return java.util.Arrays.copyOf(buffer, read);
+    } catch (IOException e) {
+      throw new IOException(
+          String.format("Failed to read file %s in fileset %s", actualPathObj, filesetIdent), e);
     }
   }
 

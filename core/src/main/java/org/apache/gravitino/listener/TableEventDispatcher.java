@@ -49,6 +49,7 @@ import org.apache.gravitino.listener.api.info.TableInfo;
 import org.apache.gravitino.rel.Column;
 import org.apache.gravitino.rel.Table;
 import org.apache.gravitino.rel.TableChange;
+import org.apache.gravitino.rel.TableDataPreview;
 import org.apache.gravitino.rel.expressions.distributions.Distribution;
 import org.apache.gravitino.rel.expressions.sorts.SortOrder;
 import org.apache.gravitino.rel.expressions.transforms.Transform;
@@ -109,6 +110,11 @@ public class TableEventDispatcher implements TableDispatcher {
           new LoadTableFailureEvent(PrincipalUtils.getCurrentUserName(), ident, e));
       throw e;
     }
+  }
+
+  @Override
+  public TableDataPreview previewTable(NameIdentifier tableIdent, int limit) {
+    return dispatcher.previewTable(tableIdent, limit);
   }
 
   @Override

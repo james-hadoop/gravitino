@@ -23,10 +23,15 @@ import static org.apache.gravitino.file.Fileset.LOCATION_NAME_UNKNOWN;
 import com.codahale.metrics.annotation.ResponseMetered;
 import com.codahale.metrics.annotation.Timed;
 import com.google.common.collect.ImmutableMap;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 import javax.inject.Inject;
 import javax.servlet.http.HttpServletRequest;
 import javax.validation.constraints.NotNull;
@@ -40,6 +45,7 @@ import javax.ws.rs.PathParam;
 import javax.ws.rs.Produces;
 import javax.ws.rs.QueryParam;
 import javax.ws.rs.core.Context;
+import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import org.apache.gravitino.Entity;
 import org.apache.gravitino.MetadataObject;
@@ -52,6 +58,8 @@ import org.apache.gravitino.dto.requests.FilesetUpdateRequest;
 import org.apache.gravitino.dto.requests.FilesetUpdatesRequest;
 import org.apache.gravitino.dto.responses.DropResponse;
 import org.apache.gravitino.dto.responses.EntityListResponse;
+import org.apache.gravitino.dto.responses.FileBinaryResponse;
+import org.apache.gravitino.dto.responses.FileContentResponse;
 import org.apache.gravitino.dto.responses.FileInfoListResponse;
 import org.apache.gravitino.dto.responses.FileLocationResponse;
 import org.apache.gravitino.dto.responses.FilesetResponse;
@@ -266,6 +274,267 @@ public class FilesetOperations {
                 decodedSubPath,
                 locationName);
             return response;
+          });
+    } catch (Exception e) {
+      return ExceptionHandlers.handleFilesetException(OperationType.LIST, fileset, schema, e);
+    }
+  }
+
+  @GET
+  @Path("{fileset}/files/content")
+  @Produces("application/vnd.gravitino.v1+json")
+  @Timed(name = "read-fileset-file-content." + MetricNames.HTTP_PROCESS_DURATION, absolute = true)
+  @ResponseMetered(name = "read-fileset-file-content", absolute = true)
+  @AuthorizationExpression(
+      expression = AuthorizationExpressionConstants.LOAD_FILESET_AUTHORIZATION_EXPRESSION,
+      accessMetadataType = MetadataObject.Type.FILESET)
+  public Response readFileContent(
+      @PathParam("metalake") @AuthorizationMetadata(type = Entity.EntityType.METALAKE)
+          String metalake,
+      @PathParam("catalog") @AuthorizationMetadata(type = Entity.EntityType.CATALOG) String catalog,
+      @PathParam("schema") @AuthorizationMetadata(type = Entity.EntityType.SCHEMA) String schema,
+      @PathParam("fileset") @AuthorizationMetadata(type = Entity.EntityType.FILESET) String fileset,
+      @QueryParam("sub_path") @NotNull String subPath,
+      @QueryParam("location_name") String locationName,
+      @QueryParam("max_length") @DefaultValue("1048576") int maxLength) {
+    LOG.info(
+        "Received read file content request: {}.{}.{}.{}, subPath: {}, locationName: {}, maxLength: {}",
+        metalake,
+        catalog,
+        schema,
+        fileset,
+        subPath,
+        locationName,
+        maxLength);
+
+    try {
+      return Utils.doAs(
+          httpRequest,
+          () -> {
+            int[] clientVersion = Utils.getClientVersion(httpRequest);
+            boolean isV1PlusClient = clientVersion == null || clientVersion[0] >= 1;
+            String decodedSubPath = isV1PlusClient ? subPath : RESTUtils.decodeString(subPath);
+
+            NameIdentifier filesetIdent =
+                NameIdentifierUtil.ofFileset(metalake, catalog, schema, fileset);
+            String content =
+                dispatcher.readFile(filesetIdent, locationName, decodedSubPath, maxLength);
+            Response response = Utils.ok(new FileContentResponse(content, content.length()));
+            LOG.info(
+                "File content read for fileset: {}.{}.{}.{}, subPath: {}",
+                metalake,
+                catalog,
+                schema,
+                fileset,
+                decodedSubPath);
+            return response;
+          });
+    } catch (Exception e) {
+      return ExceptionHandlers.handleFilesetException(OperationType.LIST, fileset, schema, e);
+    }
+  }
+
+  private static final int MAX_BINARY_READ_BYTES = 64 * 1024 * 1024; // 64 MB
+
+  private static final String SOFFICE_TIMEOUT_SECONDS = "60";
+
+  private static final java.util.Set<String> OFFICE_EXTENSIONS =
+      java.util.Set.of("doc", "docx", "ppt", "pptx", "xls", "xlsx");
+
+  // MIME types for raw binary preview endpoints
+  private static final java.util.Map<String, String> MIME_BY_EXT =
+      java.util.Map.ofEntries(
+          java.util.Map.entry("pdf", "application/pdf"),
+          java.util.Map.entry("epub", "application/epub+zip"),
+          java.util.Map.entry("mobi", "application/x-mobipocket-ebook"),
+          java.util.Map.entry("png", "image/png"),
+          java.util.Map.entry("jpg", "image/jpeg"),
+          java.util.Map.entry("jpeg", "image/jpeg"),
+          java.util.Map.entry("svg", "image/svg+xml"),
+          java.util.Map.entry("gif", "image/gif"),
+          java.util.Map.entry("bmp", "image/bmp"),
+          java.util.Map.entry("tiff", "image/tiff"),
+          java.util.Map.entry("tif", "image/tiff"),
+          java.util.Map.entry("heic", "image/heic"),
+          java.util.Map.entry("heif", "image/heif"),
+          java.util.Map.entry("raw", "image/x-raw"),
+          java.util.Map.entry("cr2", "image/x-canon-cr2"),
+          java.util.Map.entry("nef", "image/x-nikon-nef"),
+          java.util.Map.entry("arw", "image/x-sony-arw"),
+          java.util.Map.entry("dng", "image/x-adobe-dng"),
+          java.util.Map.entry("avif", "image/avif"));
+
+  private static String extensionOf(String name) {
+    int dot = name.lastIndexOf('.');
+    return dot < 0 ? "" : name.substring(dot + 1).toLowerCase(Locale.ROOT);
+  }
+
+  /**
+   * Streams the raw bytes of a file (PDF / EPUB / MOBI) for browser-side rendering. Content is read
+   * fully into memory (capped at {@value #MAX_BINARY_READ_BYTES} bytes) before streaming.
+   */
+  @GET
+  @Path("{fileset}/files/raw")
+  @Produces("application/vnd.gravitino.v1+json")
+  @Timed(name = "read-fileset-file-raw." + MetricNames.HTTP_PROCESS_DURATION, absolute = true)
+  @ResponseMetered(name = "read-fileset-file-raw", absolute = true)
+  @AuthorizationExpression(
+      expression = AuthorizationExpressionConstants.LOAD_FILESET_AUTHORIZATION_EXPRESSION,
+      accessMetadataType = MetadataObject.Type.FILESET)
+  public Response readFileRaw(
+      @PathParam("metalake") @AuthorizationMetadata(type = Entity.EntityType.METALAKE)
+          String metalake,
+      @PathParam("catalog") @AuthorizationMetadata(type = Entity.EntityType.CATALOG) String catalog,
+      @PathParam("schema") @AuthorizationMetadata(type = Entity.EntityType.SCHEMA) String schema,
+      @PathParam("fileset") @AuthorizationMetadata(type = Entity.EntityType.FILESET) String fileset,
+      @QueryParam("sub_path") @NotNull String subPath,
+      @QueryParam("location_name") String locationName) {
+    LOG.info(
+        "Received read raw file request: {}.{}.{}.{}, subPath: {}, locationName: {}",
+        metalake,
+        catalog,
+        schema,
+        fileset,
+        subPath,
+        locationName);
+
+    try {
+      return Utils.doAs(
+          httpRequest,
+          () -> {
+            int[] clientVersion = Utils.getClientVersion(httpRequest);
+            boolean isV1PlusClient = clientVersion == null || clientVersion[0] >= 1;
+            String decodedSubPath = isV1PlusClient ? subPath : RESTUtils.decodeString(subPath);
+
+            NameIdentifier filesetIdent =
+                NameIdentifierUtil.ofFileset(metalake, catalog, schema, fileset);
+            byte[] bytes =
+                dispatcher.readFileBytes(
+                    filesetIdent, locationName, decodedSubPath, MAX_BINARY_READ_BYTES);
+
+            String ext = extensionOf(decodedSubPath);
+            String mime = MIME_BY_EXT.getOrDefault(ext, MediaType.APPLICATION_OCTET_STREAM);
+            boolean truncated = bytes.length >= MAX_BINARY_READ_BYTES;
+
+            String encoded = Base64.getEncoder().encodeToString(bytes);
+            Response response =
+                Utils.ok(new FileBinaryResponse(encoded, mime, bytes.length, truncated));
+            LOG.info(
+                "Raw file read for fileset: {}.{}.{}.{}, subPath: {}, bytes: {}",
+                metalake,
+                catalog,
+                schema,
+                fileset,
+                decodedSubPath,
+                bytes.length);
+            return response;
+          });
+    } catch (Exception e) {
+      return ExceptionHandlers.handleFilesetException(OperationType.LIST, fileset, schema, e);
+    }
+  }
+
+  @GET
+  @Path("{fileset}/files/office-pdf")
+  @Produces("application/vnd.gravitino.v1+json")
+  @Timed(name = "read-fileset-office-pdf." + MetricNames.HTTP_PROCESS_DURATION, absolute = true)
+  @ResponseMetered(name = "read-fileset-office-pdf", absolute = true)
+  @AuthorizationExpression(
+      expression = AuthorizationExpressionConstants.LOAD_FILESET_AUTHORIZATION_EXPRESSION,
+      accessMetadataType = MetadataObject.Type.FILESET)
+  public Response readOfficeFileAsPdf(
+      @PathParam("metalake") @AuthorizationMetadata(type = Entity.EntityType.METALAKE)
+          String metalake,
+      @PathParam("catalog") @AuthorizationMetadata(type = Entity.EntityType.CATALOG) String catalog,
+      @PathParam("schema") @AuthorizationMetadata(type = Entity.EntityType.SCHEMA) String schema,
+      @PathParam("fileset") @AuthorizationMetadata(type = Entity.EntityType.FILESET) String fileset,
+      @QueryParam("sub_path") @NotNull String subPath,
+      @QueryParam("location_name") String locationName) {
+    LOG.info(
+        "Received office-to-pdf request: {}.{}.{}.{}, subPath: {}, locationName: {}",
+        metalake,
+        catalog,
+        schema,
+        fileset,
+        subPath,
+        locationName);
+
+    try {
+      return Utils.doAs(
+          httpRequest,
+          () -> {
+            int[] clientVersion = Utils.getClientVersion(httpRequest);
+            boolean isV1PlusClient = clientVersion == null || clientVersion[0] >= 1;
+            String decodedSubPath = isV1PlusClient ? subPath : RESTUtils.decodeString(subPath);
+            String ext = extensionOf(decodedSubPath);
+            if (!OFFICE_EXTENSIONS.contains(ext)) {
+              throw new IllegalArgumentException(
+                  String.format(
+                      "Unsupported extension for office conversion: %s (supported: %s)",
+                      ext, OFFICE_EXTENSIONS));
+            }
+
+            NameIdentifier filesetIdent =
+                NameIdentifierUtil.ofFileset(metalake, catalog, schema, fileset);
+            byte[] bytes =
+                dispatcher.readFileBytes(
+                    filesetIdent, locationName, decodedSubPath, MAX_BINARY_READ_BYTES);
+
+            java.nio.file.Path tmpDir = Files.createTempDirectory("gravitino-office-");
+            try {
+              String safeName =
+                  decodedSubPath.contains("/")
+                      ? decodedSubPath.substring(decodedSubPath.lastIndexOf('/') + 1)
+                      : decodedSubPath;
+              java.nio.file.Path srcFile = tmpDir.resolve(safeName);
+              Files.write(srcFile, bytes);
+
+              Process converter =
+                  new ProcessBuilder(
+                          "soffice",
+                          "--headless",
+                          "--convert-to",
+                          "pdf",
+                          "--outdir",
+                          tmpDir.toString(),
+                          srcFile.toString())
+                      .redirectErrorStream(true)
+                      .start();
+              boolean finished =
+                  converter.waitFor(Long.parseLong(SOFFICE_TIMEOUT_SECONDS), TimeUnit.SECONDS);
+              if (!finished) {
+                converter.destroyForcibly();
+                throw new RuntimeException("soffice conversion timed out");
+              }
+              if (converter.exitValue() != 0) {
+                throw new RuntimeException(
+                    "soffice conversion failed with exit code " + converter.exitValue());
+              }
+
+              String pdfName = safeName.substring(0, safeName.lastIndexOf('.')) + ".pdf";
+              java.nio.file.Path pdfFile = tmpDir.resolve(pdfName);
+              if (!Files.exists(pdfFile)) {
+                throw new RuntimeException("soffice produced no output, expected: " + pdfName);
+              }
+              byte[] pdf = Files.readAllBytes(pdfFile);
+              LOG.info("Office file {} converted to PDF ({} bytes)", decodedSubPath, pdf.length);
+
+              String encoded = Base64.getEncoder().encodeToString(pdf);
+              Response response =
+                  Utils.ok(
+                      new FileBinaryResponse(
+                          encoded,
+                          "application/pdf",
+                          pdf.length,
+                          pdf.length >= MAX_BINARY_READ_BYTES));
+              return response;
+            } finally {
+              try (java.util.stream.Stream<java.nio.file.Path> walk = Files.walk(tmpDir)) {
+                walk.sorted(java.util.Comparator.reverseOrder()).forEach(f -> f.toFile().delete());
+              } catch (IOException ioe) {
+                LOG.warn("Failed to clean up temp dir {}: {}", tmpDir, ioe.getMessage());
+              }
+            }
           });
     } catch (Exception e) {
       return ExceptionHandlers.handleFilesetException(OperationType.LIST, fileset, schema, e);

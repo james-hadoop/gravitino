@@ -18,6 +18,7 @@
  */
 
 import { defHttp } from '@/lib/utils/axios'
+import { tablePreviewPath } from '@/lib/table-preview'
 
 const Apis = {
   GET: ({ metalake, catalog, schema }) =>
@@ -46,6 +47,10 @@ export const getTableDetailsApi = ({ metalake, catalog, schema, table }) => {
   return defHttp.get({
     url: `${Apis.GET_DETAIL({ metalake, catalog, schema, table })}`
   })
+}
+
+export const getTablePreviewApi = params => {
+  return defHttp.get({ url: tablePreviewPath(params) })
 }
 
 export const createTableApi = ({ metalake, catalog, schema, data }) => {

@@ -23,6 +23,9 @@ import static org.apache.gravitino.dto.util.DTOConverters.fromDTOs;
 
 import com.codahale.metrics.annotation.ResponseMetered;
 import com.codahale.metrics.annotation.Timed;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
 import javax.inject.Inject;
 import javax.servlet.http.HttpServletRequest;
 import javax.ws.rs.DELETE;
@@ -46,11 +49,14 @@ import org.apache.gravitino.dto.requests.TableUpdateRequest;
 import org.apache.gravitino.dto.requests.TableUpdatesRequest;
 import org.apache.gravitino.dto.responses.DropResponse;
 import org.apache.gravitino.dto.responses.EntityListResponse;
+import org.apache.gravitino.dto.responses.TableDataPreviewResponse;
 import org.apache.gravitino.dto.responses.TableResponse;
 import org.apache.gravitino.dto.util.DTOConverters;
+import org.apache.gravitino.json.JsonUtils;
 import org.apache.gravitino.metrics.MetricNames;
 import org.apache.gravitino.rel.Table;
 import org.apache.gravitino.rel.TableChange;
+import org.apache.gravitino.rel.TableDataPreview;
 import org.apache.gravitino.server.authorization.MetadataAuthzHelper;
 import org.apache.gravitino.server.authorization.annotations.AuthorizationExpression;
 import org.apache.gravitino.server.authorization.annotations.AuthorizationMetadata;
@@ -67,6 +73,9 @@ import org.slf4j.LoggerFactory;
 public class TableOperations {
 
   private static final Logger LOG = LoggerFactory.getLogger(TableOperations.class);
+  private static final java.nio.file.Path DEFAULT_PREVIEW_CACHE_ROOT =
+      java.nio.file.Path.of("/usr/local/adm_data/gravitino/table-preview");
+  private static volatile java.nio.file.Path previewCacheRoot = DEFAULT_PREVIEW_CACHE_ROOT;
 
   private final TableDispatcher dispatcher;
 
@@ -75,6 +84,14 @@ public class TableOperations {
   @Inject
   public TableOperations(TableDispatcher dispatcher) {
     this.dispatcher = dispatcher;
+  }
+
+  static void setPreviewCacheRootForTest(java.nio.file.Path cacheRoot) {
+    previewCacheRoot = cacheRoot;
+  }
+
+  static void resetPreviewCacheRootForTest() {
+    previewCacheRoot = DEFAULT_PREVIEW_CACHE_ROOT;
   }
 
   @GET
@@ -196,6 +213,83 @@ public class TableOperations {
     } catch (Exception e) {
       return ExceptionHandlers.handleTableException(OperationType.LOAD, table, schema, e);
     }
+  }
+
+  @GET
+  @Path("{table}/preview")
+  @Produces("application/vnd.gravitino.v1+json")
+  @Timed(name = "preview-table." + MetricNames.HTTP_PROCESS_DURATION, absolute = true)
+  @ResponseMetered(name = "preview-table", absolute = true)
+  @AuthorizationExpression(
+      expression = AuthorizationExpressionConstants.LOAD_TABLE_AUTHORIZATION_EXPRESSION,
+      accessMetadataType = MetadataObject.Type.TABLE)
+  public Response previewTable(
+      @PathParam("metalake") @AuthorizationMetadata(type = Entity.EntityType.METALAKE)
+          String metalake,
+      @PathParam("catalog") @AuthorizationMetadata(type = Entity.EntityType.CATALOG) String catalog,
+      @PathParam("schema") @AuthorizationMetadata(type = Entity.EntityType.SCHEMA) String schema,
+      @PathParam("table") @AuthorizationMetadata(type = Entity.EntityType.TABLE) String table) {
+    LOG.info(
+        "Received preview table request for table: {}.{}.{}.{}", metalake, catalog, schema, table);
+    try {
+      return Utils.doAs(
+          httpRequest,
+          () -> {
+            NameIdentifier ident = NameIdentifierUtil.ofTable(metalake, catalog, schema, table);
+            TableDataPreviewResponse cached = readPreviewCache(ident);
+            if (cached != null) {
+              return Utils.ok(cached);
+            }
+            TableDataPreview preview = dispatcher.previewTable(ident, 100);
+            TableDataPreviewResponse response = new TableDataPreviewResponse(preview);
+            writePreviewCache(ident, response);
+            return Utils.ok(response);
+          });
+    } catch (Exception e) {
+      return ExceptionHandlers.handleTableException(OperationType.LOAD, table, schema, e);
+    }
+  }
+
+  private static TableDataPreviewResponse readPreviewCache(NameIdentifier ident) {
+    java.nio.file.Path cacheFile = previewCacheFile(ident);
+    if (!Files.isRegularFile(cacheFile)) {
+      return null;
+    }
+    try {
+      return JsonUtils.objectMapper().readValue(cacheFile.toFile(), TableDataPreviewResponse.class);
+    } catch (IOException e) {
+      LOG.warn("Failed to read table preview cache {}", cacheFile, e);
+      return null;
+    }
+  }
+
+  private static void writePreviewCache(NameIdentifier ident, TableDataPreviewResponse response) {
+    java.nio.file.Path cacheFile = previewCacheFile(ident);
+    try {
+      Files.createDirectories(cacheFile.getParent());
+      java.nio.file.Path temporaryFile =
+          Files.createTempFile(cacheFile.getParent(), ".preview-", ".tmp");
+      JsonUtils.objectMapper().writeValue(temporaryFile.toFile(), response);
+      Files.move(
+          temporaryFile,
+          cacheFile,
+          StandardCopyOption.REPLACE_EXISTING,
+          StandardCopyOption.ATOMIC_MOVE);
+    } catch (IOException e) {
+      LOG.warn("Failed to write table preview cache {}", cacheFile, e);
+    }
+  }
+
+  private static java.nio.file.Path previewCacheFile(NameIdentifier ident) {
+    java.nio.file.Path path = previewCacheRoot;
+    for (String level : ident.namespace().levels()) {
+      path = path.resolve(sanitizePathSegment(level));
+    }
+    return path.resolve(sanitizePathSegment(ident.name()) + ".json");
+  }
+
+  private static String sanitizePathSegment(String value) {
+    return value.replaceAll("[^A-Za-z0-9._-]", "_");
   }
 
   @PUT

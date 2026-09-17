@@ -26,8 +26,12 @@ import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.Driver;
 import java.sql.DriverManager;
+import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
@@ -69,9 +73,11 @@ import org.apache.gravitino.meta.AuditInfo;
 import org.apache.gravitino.metrics.MetricsSystem;
 import org.apache.gravitino.metrics.source.JdbcCatalogMetricsSource;
 import org.apache.gravitino.rel.Column;
+import org.apache.gravitino.rel.SupportsTableDataPreview;
 import org.apache.gravitino.rel.Table;
 import org.apache.gravitino.rel.TableCatalog;
 import org.apache.gravitino.rel.TableChange;
+import org.apache.gravitino.rel.TableDataPreview;
 import org.apache.gravitino.rel.expressions.distributions.Distribution;
 import org.apache.gravitino.rel.expressions.sorts.SortOrder;
 import org.apache.gravitino.rel.expressions.transforms.Transform;
@@ -82,7 +88,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /** Operations for interacting with the Jdbc catalog in Apache Gravitino. */
-public class JdbcCatalogOperations implements CatalogOperations, SupportsSchemas, TableCatalog {
+public class JdbcCatalogOperations
+    implements CatalogOperations, SupportsSchemas, TableCatalog, SupportsTableDataPreview {
 
   private static final String GRAVITINO_ATTRIBUTE_DOES_NOT_EXIST_MSG =
       "The Gravitino id attribute does not exist in properties";
@@ -355,6 +362,47 @@ public class JdbcCatalogOperations implements CatalogOperations, SupportsSchemas
     return tableOperation.listTables(databaseName).stream()
         .map(table -> NameIdentifier.of(namespace, table))
         .toArray(NameIdentifier[]::new);
+  }
+
+  @Override
+  public TableDataPreview previewTable(NameIdentifier tableIdent, int limit) {
+    Preconditions.checkArgument(
+        limit > 0 && limit <= 100, "Preview limit must be between 1 and 100");
+    String databaseName = NameIdentifier.of(tableIdent.namespace().levels()).name();
+
+    try (Connection connection = dataSource.getConnection();
+        Statement statement = connection.createStatement()) {
+      statement.setMaxRows(limit);
+      String quote = connection.getMetaData().getIdentifierQuoteString().trim();
+      String qualifiedTable =
+          quoteIdentifier(databaseName, quote) + "." + quoteIdentifier(tableIdent.name(), quote);
+      try (ResultSet resultSet = statement.executeQuery("SELECT * FROM " + qualifiedTable)) {
+        ResultSetMetaData metadata = resultSet.getMetaData();
+        List<String> columns = new ArrayList<>(metadata.getColumnCount());
+        for (int column = 1; column <= metadata.getColumnCount(); column++) {
+          columns.add(metadata.getColumnLabel(column));
+        }
+
+        List<List<String>> rows = new ArrayList<>();
+        while (resultSet.next() && rows.size() < limit) {
+          List<String> row = new ArrayList<>(metadata.getColumnCount());
+          for (int column = 1; column <= metadata.getColumnCount(); column++) {
+            row.add(resultSet.getString(column));
+          }
+          rows.add(row);
+        }
+        return new TableDataPreview(columns, rows);
+      }
+    } catch (SQLException e) {
+      throw exceptionConverter.toGravitinoException(e);
+    }
+  }
+
+  private static String quoteIdentifier(String identifier, String quote) {
+    if (quote.isEmpty()) {
+      return identifier;
+    }
+    return quote + identifier.replace(quote, quote + quote) + quote;
   }
 
   /**

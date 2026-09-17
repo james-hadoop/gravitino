@@ -32,6 +32,7 @@ import org.apache.gravitino.exceptions.TableAlreadyExistsException;
 import org.apache.gravitino.rel.Column;
 import org.apache.gravitino.rel.Table;
 import org.apache.gravitino.rel.TableChange;
+import org.apache.gravitino.rel.TableDataPreview;
 import org.apache.gravitino.rel.expressions.distributions.Distribution;
 import org.apache.gravitino.rel.expressions.sorts.SortOrder;
 import org.apache.gravitino.rel.expressions.transforms.Transform;
@@ -63,6 +64,11 @@ public class TableNormalizeDispatcher implements TableDispatcher {
     // The constraints of the name spec may be more strict than underlying catalog,
     // and for compatibility reasons, we only apply case-sensitive capabilities here.
     return dispatcher.loadTable(normalizeCaseSensitive(ident));
+  }
+
+  @Override
+  public TableDataPreview previewTable(NameIdentifier tableIdent, int limit) {
+    return dispatcher.previewTable(normalizeCaseSensitive(tableIdent), limit);
   }
 
   @Override

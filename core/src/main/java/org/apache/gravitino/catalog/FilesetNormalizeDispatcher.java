@@ -65,6 +65,20 @@ public class FilesetNormalizeDispatcher implements FilesetDispatcher {
   }
 
   @Override
+  public String readFile(NameIdentifier ident, String locationName, String subPath, int maxLength)
+      throws NoSuchFilesetException, IOException {
+    return dispatcher.readFile(normalizeCaseSensitive(ident), locationName, subPath, maxLength);
+  }
+
+  @Override
+  public byte[] readFileBytes(
+      NameIdentifier ident, String locationName, String subPath, int maxLength)
+      throws NoSuchFilesetException, IOException {
+    return dispatcher.readFileBytes(
+        normalizeCaseSensitive(ident), locationName, subPath, maxLength);
+  }
+
+  @Override
   public Fileset loadFileset(NameIdentifier ident) throws NoSuchFilesetException {
     // The constraints of the name spec may be more strict than underlying catalog,
     // and for compatibility reasons, we only apply case-sensitive capabilities here.

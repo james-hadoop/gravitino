@@ -32,11 +32,14 @@ import static org.mockito.Mockito.when;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import javax.servlet.http.HttpServletRequest;
 import javax.ws.rs.client.Entity;
 import javax.ws.rs.core.Application;
@@ -69,6 +72,7 @@ import org.apache.gravitino.dto.responses.DropResponse;
 import org.apache.gravitino.dto.responses.EntityListResponse;
 import org.apache.gravitino.dto.responses.ErrorConstants;
 import org.apache.gravitino.dto.responses.ErrorResponse;
+import org.apache.gravitino.dto.responses.TableDataPreviewResponse;
 import org.apache.gravitino.dto.responses.TableResponse;
 import org.apache.gravitino.dto.util.DTOConverters;
 import org.apache.gravitino.exceptions.NoSuchSchemaException;
@@ -78,6 +82,7 @@ import org.apache.gravitino.lock.LockManager;
 import org.apache.gravitino.rel.Column;
 import org.apache.gravitino.rel.Table;
 import org.apache.gravitino.rel.TableChange;
+import org.apache.gravitino.rel.TableDataPreview;
 import org.apache.gravitino.rel.expressions.distributions.Distribution;
 import org.apache.gravitino.rel.expressions.distributions.Strategy;
 import org.apache.gravitino.rel.expressions.sorts.NullOrdering;
@@ -95,6 +100,7 @@ import org.glassfish.jersey.test.TestProperties;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.mockito.Mockito;
 
 public class TestTableOperations extends BaseOperationsTest {
@@ -565,6 +571,56 @@ public class TestTableOperations extends BaseOperationsTest {
     ErrorResponse errorResp2 = resp2.readEntity(ErrorResponse.class);
     Assertions.assertEquals(ErrorConstants.INTERNAL_ERROR_CODE, errorResp2.getCode());
     Assertions.assertEquals(RuntimeException.class.getSimpleName(), errorResp2.getType());
+  }
+
+  @Test
+  public void testPreviewTable() {
+    TableDataPreview preview =
+        new TableDataPreview(
+            ImmutableList.of("id", "name"),
+            Arrays.asList(Arrays.asList("1", "Alice"), Arrays.asList("2", null)));
+    when(dispatcher.previewTable(any(), eq(100))).thenReturn(preview);
+
+    Response response =
+        target(tablePath(metalake, catalog, schema) + "table1/preview")
+            .request(MediaType.APPLICATION_JSON_TYPE)
+            .accept("application/vnd.gravitino.v1+json")
+            .get();
+
+    Assertions.assertEquals(Response.Status.OK.getStatusCode(), response.getStatus());
+    TableDataPreviewResponse previewResponse = response.readEntity(TableDataPreviewResponse.class);
+    Assertions.assertEquals(ImmutableList.of("id", "name"), previewResponse.getColumns());
+    Assertions.assertEquals(Arrays.asList("2", null), previewResponse.getRows().get(1));
+  }
+
+  @Test
+  public void testPreviewTableUsesLocalCache(@TempDir Path tempDir) throws IOException {
+    TableDataPreview preview =
+        new TableDataPreview(ImmutableList.of("id"), ImmutableList.of(ImmutableList.of("1")));
+    when(dispatcher.previewTable(any(), eq(100))).thenReturn(preview);
+    TableOperations.setPreviewCacheRootForTest(tempDir);
+
+    try {
+      Response first =
+          target(tablePath(metalake, catalog, schema) + "table1/preview")
+              .request(MediaType.APPLICATION_JSON_TYPE)
+              .accept("application/vnd.gravitino.v1+json")
+              .get();
+      Response second =
+          target(tablePath(metalake, catalog, schema) + "table1/preview")
+              .request(MediaType.APPLICATION_JSON_TYPE)
+              .accept("application/vnd.gravitino.v1+json")
+              .get();
+
+      Assertions.assertEquals(Response.Status.OK.getStatusCode(), first.getStatus());
+      Assertions.assertEquals(Response.Status.OK.getStatusCode(), second.getStatus());
+      Mockito.verify(dispatcher, Mockito.times(1)).previewTable(any(), eq(100));
+      try (Stream<Path> files = Files.walk(tempDir)) {
+        Assertions.assertEquals(1, files.filter(Files::isRegularFile).count());
+      }
+    } finally {
+      TableOperations.resetPreviewCacheRootForTest();
+    }
   }
 
   @Test

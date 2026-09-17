@@ -116,6 +116,19 @@ public class FilesetEventDispatcher implements FilesetDispatcher {
   }
 
   @Override
+  public String readFile(NameIdentifier ident, String locationName, String subPath, int maxLength)
+      throws NoSuchFilesetException, IOException {
+    return dispatcher.readFile(ident, locationName, subPath, maxLength);
+  }
+
+  @Override
+  public byte[] readFileBytes(
+      NameIdentifier ident, String locationName, String subPath, int maxLength)
+      throws NoSuchFilesetException, IOException {
+    return dispatcher.readFileBytes(ident, locationName, subPath, maxLength);
+  }
+
+  @Override
   public Fileset loadFileset(NameIdentifier ident) throws NoSuchFilesetException {
     eventBus.dispatchEvent(new LoadFilesetPreEvent(PrincipalUtils.getCurrentUserName(), ident));
     try {

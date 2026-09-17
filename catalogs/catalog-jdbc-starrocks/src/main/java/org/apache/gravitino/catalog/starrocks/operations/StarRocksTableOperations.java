@@ -92,6 +92,32 @@ public class StarRocksTableOperations extends JdbcTableOperations {
   }
 
   @Override
+  public List<String> listTables(String databaseName) {
+    String sql = String.format("SHOW TABLES FROM `%s`", databaseName);
+    try (Connection connection = getConnection(databaseName);
+        Statement statement = connection.createStatement();
+        ResultSet resultSet = statement.executeQuery(sql)) {
+      return readTableNames(resultSet);
+    } catch (SQLException e) {
+      throw exceptionMapper.toGravitinoException(e);
+    }
+  }
+
+  protected List<String> readTableNames(ResultSet resultSet) throws SQLException {
+    List<String> tableNames = new ArrayList<>();
+    while (resultSet.next()) {
+      tableNames.add(resultSet.getString(1));
+    }
+    return tableNames;
+  }
+
+  @Override
+  protected ResultSet getTable(Connection connection, String databaseName, String tableName)
+      throws SQLException {
+    return connection.getMetaData().getTables(databaseName, null, tableName, null);
+  }
+
+  @Override
   protected String generateCreateTableSql(
       String tableName,
       JdbcColumn[] columns,

@@ -38,6 +38,37 @@ const Apis = {
       catalog
     )}/schemas/${encodeURIComponent(schema)}/filesets/${encodeURIComponent(fileset)}/files${queryString ? `?${queryString}` : ''}`
   },
+  READ_FILE_CONTENT: ({ metalake, catalog, schema, fileset, subPath, locationName, maxLength }) => {
+    const params = new URLSearchParams()
+    if (subPath) params.append('sub_path', subPath)
+    if (locationName) params.append('location_name', locationName)
+    if (maxLength) params.append('max_length', maxLength)
+    const queryString = params.toString()
+
+    return `/api/metalakes/${encodeURIComponent(metalake)}/catalogs/${encodeURIComponent(
+      catalog
+    )}/schemas/${encodeURIComponent(schema)}/filesets/${encodeURIComponent(fileset)}/files/content${queryString ? `?${queryString}` : ''}`
+  },
+  READ_FILE_RAW: ({ metalake, catalog, schema, fileset, subPath, locationName }) => {
+    const params = new URLSearchParams()
+    if (subPath) params.append('sub_path', subPath)
+    if (locationName) params.append('location_name', locationName)
+    const queryString = params.toString()
+
+    return `/api/metalakes/${encodeURIComponent(metalake)}/catalogs/${encodeURIComponent(
+      catalog
+    )}/schemas/${encodeURIComponent(schema)}/filesets/${encodeURIComponent(fileset)}/files/raw${queryString ? `?${queryString}` : ''}`
+  },
+  READ_FILE_OFFICE_PDF: ({ metalake, catalog, schema, fileset, subPath, locationName }) => {
+    const params = new URLSearchParams()
+    if (subPath) params.append('sub_path', subPath)
+    if (locationName) params.append('location_name', locationName)
+    const queryString = params.toString()
+
+    return `/api/metalakes/${encodeURIComponent(metalake)}/catalogs/${encodeURIComponent(
+      catalog
+    )}/schemas/${encodeURIComponent(schema)}/filesets/${encodeURIComponent(fileset)}/files/office-pdf${queryString ? `?${queryString}` : ''}`
+  },
   CREATE: ({ metalake, catalog, schema }) =>
     `/api/metalakes/${encodeURIComponent(metalake)}/catalogs/${encodeURIComponent(catalog)}/schemas/${encodeURIComponent(schema)}/filesets`,
   UPDATE: ({ metalake, catalog, schema, fileset }) =>
@@ -61,6 +92,24 @@ export const getFilesetDetailsApi = ({ metalake, catalog, schema, fileset }) => 
 export const listFilesetFilesApi = ({ metalake, catalog, schema, fileset, subPath = '/', locationName }) => {
   return defHttp.get({
     url: `${Apis.LIST_FILES({ metalake, catalog, schema, fileset, subPath, locationName })}`
+  })
+}
+
+export const readFilesetFileContentApi = ({ metalake, catalog, schema, fileset, subPath, locationName, maxLength }) => {
+  return defHttp.get({
+    url: `${Apis.READ_FILE_CONTENT({ metalake, catalog, schema, fileset, subPath, locationName, maxLength })}`
+  })
+}
+
+export const readFilesetFileRawApi = ({ metalake, catalog, schema, fileset, subPath, locationName }) => {
+  return defHttp.get({
+    url: `${Apis.READ_FILE_RAW({ metalake, catalog, schema, fileset, subPath, locationName })}`
+  })
+}
+
+export const readFilesetFileOfficePdfApi = ({ metalake, catalog, schema, fileset, subPath, locationName }) => {
+  return defHttp.get({
+    url: `${Apis.READ_FILE_OFFICE_PDF({ metalake, catalog, schema, fileset, subPath, locationName })}`
   })
 }
 

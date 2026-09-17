@@ -59,8 +59,10 @@ import org.apache.gravitino.meta.AuditInfo;
 import org.apache.gravitino.meta.ColumnEntity;
 import org.apache.gravitino.meta.TableEntity;
 import org.apache.gravitino.rel.Column;
+import org.apache.gravitino.rel.SupportsTableDataPreview;
 import org.apache.gravitino.rel.Table;
 import org.apache.gravitino.rel.TableChange;
+import org.apache.gravitino.rel.TableDataPreview;
 import org.apache.gravitino.rel.expressions.distributions.Distribution;
 import org.apache.gravitino.rel.expressions.distributions.Distributions;
 import org.apache.gravitino.rel.expressions.sorts.SortOrder;
@@ -190,6 +192,27 @@ public class TableOperationDispatcher extends OperationDispatcher implements Tab
                 HasPropertyMetadata::tablePropertiesMetadata,
                 entityCombinedTable.tableFromCatalog().properties()))
         .withImported(entityCombinedTable.imported());
+  }
+
+  @Override
+  public TableDataPreview previewTable(NameIdentifier tableIdent, int limit) {
+    return TreeLockUtils.doWithTreeLock(
+        tableIdent,
+        LockType.READ,
+        () ->
+            doWithCatalog(
+                getCatalogIdentifier(tableIdent),
+                catalog ->
+                    catalog.doWithCatalogOps(
+                        operations -> {
+                          if (!(operations instanceof SupportsTableDataPreview)) {
+                            throw new UnsupportedOperationException(
+                                "Catalog does not support table data preview");
+                          }
+                          return ((SupportsTableDataPreview) operations)
+                              .previewTable(tableIdent, limit);
+                        }),
+                RuntimeException.class));
   }
 
   /**

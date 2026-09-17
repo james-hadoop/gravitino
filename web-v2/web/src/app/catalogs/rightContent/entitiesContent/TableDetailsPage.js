@@ -36,6 +36,7 @@ import { getCatalogDetails, getCurrentEntityOwner } from '@/lib/store/metalakes'
 import CreateTableDialog from '../CreateTableDialog'
 import Loading from '@/components/Loading'
 import PropertiesContent from '@/components/PropertiesContent'
+import TablePreview from './TablePreview'
 
 const SetOwnerDialog = dynamic(() => import('@/components/SetOwnerDialog'), {
   loading: () => <Loading />,
@@ -51,8 +52,7 @@ export default function TableDetailsPage({ ...props }) {
   const [metadataObjectFullName, setMetadataObjectFullName] = useState('')
   const { catalog, schema, table } = props.namespaces
   const auth = useAppSelector(state => state.auth)
-  const { anthEnable, systemConfig } = auth
-  const { 'gravitino.datastrato.custom.preview.enable': previewEnable } = systemConfig || {}
+  const { anthEnable } = auth
   const searchParams = useSearchParams()
   const currentMetalake = searchParams.get('metalake')
   const catalogType = searchParams.get('catalogType')
@@ -345,6 +345,7 @@ export default function TableDetailsPage({ ...props }) {
 
   const tabOptions = [
     { label: 'Columns', key: 'Columns' },
+    { label: 'Preview', key: 'Preview' },
     ...(anthEnable ? [{ label: 'Associated Roles', key: 'Associated Roles' }] : [])
   ]
 
@@ -619,6 +620,9 @@ export default function TableDetailsPage({ ...props }) {
           metadataObjectType={'table'}
           metadataObjectFullName={`${catalog}.${schema}.${table}`}
         />
+      )}
+      {tabKey === 'Preview' && (
+        <TablePreview metalake={currentMetalake} catalog={catalog} schema={schema} table={table} />
       )}
       {open && (
         <CreateTableDialog
